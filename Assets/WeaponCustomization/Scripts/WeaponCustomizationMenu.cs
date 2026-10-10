@@ -31,9 +31,12 @@ namespace WeaponCustomization
 
         public bool IsOpen { get; private set; }
 
-        private static readonly Color PanelColor = new Color(0.06f, 0.07f, 0.08f, 0.92f);
-        private static readonly Color ButtonColor = new Color(0.16f, 0.18f, 0.2f, 1f);
-        private static readonly Color SelectedColor = new Color(0.85f, 0.45f, 0.1f, 1f);
+        [Header("Стиль (как у HUD)")]
+        [Tooltip("Акцентный цвет линий и выделения — под цвет перекрестия HUD.")]
+        public Color accentColor = new Color(0.55f, 0.88f, 0.98f, 1f);
+
+        [Tooltip("Шрифт HUD. Если пусто — встроенный шрифт Unity.")]
+        public Font customFont;
 
         private GameObject _canvasRoot;
         private Text _titleText;
@@ -41,7 +44,6 @@ namespace WeaponCustomization
         private WeaponPreviewRenderer _preview;
         private Font _font;
         private WeaponAttachmentSystem _shownWeapon;
-        private readonly List<(Button button, int slot, int option)> _optionButtons = new List<(Button, int, int)>();
 
         private CursorLockMode _prevLock;
         private bool _prevCursorVisible;
@@ -65,7 +67,7 @@ namespace WeaponCustomization
         private void Start()
         {
             Debug.Log("[WeaponCustomization] Меню обвеса готово — нажмите M.");
-            _font = LoadFont();
+            _font = customFont != null ? customFont : LoadFont();
             var previewGo = new GameObject("WeaponPreviewRig");
             _preview = previewGo.AddComponent<WeaponPreviewRenderer>();
             _preview.Init(previewLayer, 1024, 640);
@@ -79,6 +81,7 @@ namespace WeaponCustomization
             if (TogglePressed()) SetOpen(!IsOpen);
             else if (IsOpen && EscapePressed()) SetOpen(false);
             else if (IsOpen) HandleNudgeKeys();
+            if (IsOpen) AnimateFade();
         }
 
         private void LateUpdate()
@@ -125,6 +128,8 @@ namespace WeaponCustomization
                 }
 
                 ShowWeapon(target);
+                _fade = 0f;
+                _canvasGroup.alpha = 0f;
                 _canvasRoot.SetActive(true);
                 _preview.SetVisible(true);
                 Debug.Log("[WeaponCustomization] Меню открыто. Оружие: " +
@@ -213,6 +218,28 @@ namespace WeaponCustomization
         }
 
         // ---------------------------------------------------------------- UI
+        // Стиль — как у HUD KINEMATION: тонкие циановые линии (как у прицела-перекрестия),
+        // уголки-скобки, полупрозрачный тёмный фон, заглавные буквы.
+
+        private class OptionCard
+        {
+            public Button button;
+            public Image fill;
+            public Image[] border;
+            public Image bar;
+            public Text label;
+            public Text status;
+            public int slot;
+            public int option;
+        }
+
+        private readonly List<OptionCard> _cards = new List<OptionCard>();
+        private CanvasGroup _canvasGroup;
+        private float _fade;
+
+        private Color Accent => accentColor;
+        private Color AccentA(float a) => new Color(accentColor.r, accentColor.g, accentColor.b, a);
+        private static readonly Color TextDim = new Color(1f, 1f, 1f, 0.55f);
 
         private void BuildUI()
         {
@@ -226,30 +253,38 @@ namespace WeaponCustomization
             scaler.referenceResolution = new Vector2(1920, 1080);
             scaler.matchWidthOrHeight = 0.5f;
             _canvasRoot.AddComponent<GraphicRaycaster>();
+            _canvasGroup = _canvasRoot.AddComponent<CanvasGroup>();
 
-            // Затемнение фона
+            // Затемнение с виньеткой — сцена остаётся видна, как под HUD.
             RectTransform dim = CreateRect("Dim", _canvasRoot.transform);
             Stretch(dim);
-            dim.gameObject.AddComponent<Image>().color = new Color(0f, 0f, 0f, 0.55f);
+            dim.gameObject.AddComponent<Image>().color = new Color(0.01f, 0.015f, 0.02f, 0.45f);
+            RectTransform vignette = CreateRect("Vignette", _canvasRoot.transform);
+            Stretch(vignette);
+            var vig = vignette.gameObject.AddComponent<RawImage>();
+            vig.texture = BuildVignette();
+            vig.color = new Color(0f, 0f, 0f, 0.85f);
+            vig.raycastTarget = false;
 
-            // Главное окно
-            RectTransform window = CreateRect("Window", _canvasRoot.transform);
-            window.anchorMin = window.anchorMax = new Vector2(0.5f, 0.5f);
-            window.sizeDelta = new Vector2(1600, 820);
-            window.gameObject.AddComponent<Image>().color = PanelColor;
+            // ── Заголовок
+            Text tag = CreateText("Tag", _canvasRoot.transform, "// ОБВЕС ОРУЖИЯ", 20, TextAnchor.LowerLeft, FontStyle.Bold);
+            tag.color = Accent;
+            SetRect(tag.rectTransform, new Vector2(0, 1), new Vector2(0, 1), new Vector2(80, -100), new Vector2(700, -70));
 
-            _titleText = CreateText("Title", window, "", 44, TextAnchor.MiddleLeft, FontStyle.Bold);
-            SetRect(_titleText.rectTransform, new Vector2(0, 1), new Vector2(1, 1), new Vector2(40, -90), new Vector2(-40, -20));
+            _titleText = CreateText("Title", _canvasRoot.transform, "", 60, TextAnchor.UpperLeft, FontStyle.Bold);
+            SetRect(_titleText.rectTransform, new Vector2(0, 1), new Vector2(0, 1), new Vector2(76, -180), new Vector2(1000, -100));
 
-            Text hint = CreateText("Hint", window, "M / Esc — закрыть   •   ЛКМ + мышь — вращать оружие", 22,
-                TextAnchor.MiddleRight, FontStyle.Normal);
-            hint.color = new Color(1f, 1f, 1f, 0.5f);
-            SetRect(hint.rectTransform, new Vector2(0, 1), new Vector2(1, 1), new Vector2(40, -90), new Vector2(-40, -20));
+            Line(_canvasRoot.transform, new Vector2(0, 1), new Vector2(80, -186), new Vector2(420, 2), Accent);
+            Line(_canvasRoot.transform, new Vector2(0, 1), new Vector2(504, -186), new Vector2(16, 2), AccentA(0.5f));
+            Line(_canvasRoot.transform, new Vector2(0, 1), new Vector2(524, -186), new Vector2(8, 2), AccentA(0.3f));
 
-            // 3D-превью
-            RectTransform previewFrame = CreateRect("PreviewFrame", window);
-            SetRect(previewFrame, new Vector2(0, 0), new Vector2(0, 1), new Vector2(40, 40), new Vector2(1080, -110));
-            previewFrame.gameObject.AddComponent<Image>().color = new Color(1f, 1f, 1f, 0.04f);
+            // ── 3D-превью с уголками
+            RectTransform previewFrame = CreateRect("PreviewFrame", _canvasRoot.transform);
+            SetRect(previewFrame, new Vector2(0, 0), new Vector2(0, 1), new Vector2(80, 150), new Vector2(1180, -230));
+            var bg = previewFrame.gameObject.AddComponent<Image>();
+            bg.color = AccentA(0.03f);
+            Frame(previewFrame, AccentA(0.15f), 1f);
+            Brackets(previewFrame, Accent, 34f, 2f);
 
             RectTransform previewImageRect = CreateRect("Preview3D", previewFrame);
             Stretch(previewImageRect);
@@ -257,72 +292,175 @@ namespace WeaponCustomization
             raw.texture = _preview.Texture;
             previewImageRect.gameObject.AddComponent<PreviewDragHandler>().preview = _preview;
 
-            // Панель обвеса
-            RectTransform side = CreateRect("Attachments", window);
-            SetRect(side, new Vector2(0, 0), new Vector2(1, 1), new Vector2(1120, 40), new Vector2(-40, -110));
-            side.gameObject.AddComponent<Image>().color = new Color(1f, 1f, 1f, 0.03f);
+            Text previewCaption = CreateText("Caption", previewFrame, "3D-ПРЕВЬЮ", 16, TextAnchor.UpperLeft, FontStyle.Bold);
+            previewCaption.color = AccentA(0.7f);
+            SetRect(previewCaption.rectTransform, new Vector2(0, 1), new Vector2(1, 1), new Vector2(22, -40), new Vector2(-22, -14));
+
+            // ── Правая колонка — выбор обвеса
+            RectTransform side = CreateRect("Attachments", _canvasRoot.transform);
+            SetRect(side, new Vector2(1, 0), new Vector2(1, 1), new Vector2(-660, 150), new Vector2(-80, -230));
             var layout = side.gameObject.AddComponent<VerticalLayoutGroup>();
-            layout.padding = new RectOffset(20, 20, 20, 20);
-            layout.spacing = 12;
+            layout.spacing = 10;
             layout.childControlHeight = true;
             layout.childControlWidth = true;
             layout.childForceExpandHeight = false;
             layout.childForceExpandWidth = true;
             _optionsRoot = side;
+
+            // ── Подсказки клавиш внизу
+            Text hints = CreateText("Hints", _canvasRoot.transform,
+                "[M] ЗАКРЫТЬ     [ЛКМ] ВРАЩАТЬ     [↑ ↓ ← →] ПОЛОЖЕНИЕ     [SHIFT] ТОЧНЕЕ", 18,
+                TextAnchor.MiddleLeft, FontStyle.Bold);
+            hints.color = TextDim;
+            SetRect(hints.rectTransform, new Vector2(0, 0), new Vector2(1, 0), new Vector2(80, 70), new Vector2(-80, 110));
+            Line(_canvasRoot.transform, new Vector2(0, 0), new Vector2(80, 124), new Vector2(1760, 1), AccentA(0.25f), new Vector2(0, 0));
+        }
+
+        private void AnimateFade()
+        {
+            if (_canvasGroup == null) return;
+            _fade = Mathf.MoveTowards(_fade, 1f, Time.unscaledDeltaTime / 0.15f);
+            _canvasGroup.alpha = _fade;
         }
 
         private void RebuildOptions()
         {
             foreach (Transform child in _optionsRoot) Destroy(child.gameObject);
-            _optionButtons.Clear();
+            _cards.Clear();
 
             if (_shownWeapon == null)
             {
-                _titleText.text = "Нет оружия";
-                AddLabel("В руках нет оружия с WeaponAttachmentSystem.", 24, FontStyle.Normal);
+                _titleText.text = "НЕТ ОРУЖИЯ";
+                AddLabel("В руках нет оружия с WeaponAttachmentSystem.", 20, FontStyle.Normal, TextDim);
                 return;
             }
 
-            _titleText.text = _shownWeapon.weaponName;
+            _titleText.text = _shownWeapon.weaponName.ToUpperInvariant();
 
             for (int s = 0; s < _shownWeapon.slots.Count; s++)
             {
                 AttachmentSlot slot = _shownWeapon.slots[s];
-                AddLabel(slot.slotName.ToUpperInvariant(), 26, FontStyle.Bold);
+                AddSectionHeader(slot.slotName);
 
-                AddOptionButton("Без обвеса", s, -1);
+                AddOptionCard("БЕЗ ОБВЕСА", s, -1);
                 for (int o = 0; o < slot.options.Count; o++)
                 {
-                    AddOptionButton(slot.options[o].displayName, s, o);
+                    AddOptionCard(slot.options[o].displayName.ToUpperInvariant(), s, o);
                 }
 
-                AddLabel("Положение (стрелки на клавиатуре, Shift — точнее)", 20, FontStyle.Normal);
+                AddSpacer(14);
+                AddSectionHeader("Положение");
                 int slotIndex = s;
-                AddNudgeRow(("Выше", () => Nudge(slotIndex, Vector3.up)),
-                            ("Ниже", () => Nudge(slotIndex, Vector3.down)));
-                AddNudgeRow(("Вперёд", () => Nudge(slotIndex, Vector3.forward)),
-                            ("Назад", () => Nudge(slotIndex, Vector3.back)));
-                AddNudgeRow(("Влево", () => Nudge(slotIndex, Vector3.left)),
-                            ("Вправо", () => Nudge(slotIndex, Vector3.right)),
-                            ("Сброс", () => _shownWeapon.Nudge(slotIndex, null)));
+                AddNudgeRow(("ВЫШЕ", () => Nudge(slotIndex, Vector3.up)),
+                            ("НИЖЕ", () => Nudge(slotIndex, Vector3.down)),
+                            ("ВПЕРЁД", () => Nudge(slotIndex, Vector3.forward)),
+                            ("НАЗАД", () => Nudge(slotIndex, Vector3.back)));
+                AddNudgeRow(("ВЛЕВО", () => Nudge(slotIndex, Vector3.left)),
+                            ("ВПРАВО", () => Nudge(slotIndex, Vector3.right)),
+                            ("СБРОС", () => _shownWeapon.Nudge(slotIndex, null)));
             }
 
             RefreshSelection();
         }
 
-        private const float NudgeStep = 0.005f;     // 5 мм
-        private const float NudgeStepFine = 0.001f; // 1 мм
+        private void AddSectionHeader(string text)
+        {
+            RectTransform row = CreateRect("Header", _optionsRoot);
+            row.gameObject.AddComponent<LayoutElement>().preferredHeight = 40;
+            Text t = CreateText("Text", row, text.ToUpperInvariant(), 22, TextAnchor.MiddleLeft, FontStyle.Bold);
+            t.color = Accent;
+            SetRect(t.rectTransform, Vector2.zero, Vector2.one, new Vector2(0, 4), Vector2.zero);
+            Line(row, new Vector2(0, 0), new Vector2(0, 2), new Vector2(0, 1), AccentA(0.35f), new Vector2(0, 0), stretchX: true);
+            Line(row, new Vector2(0, 0), new Vector2(0, 1), new Vector2(48, 3), Accent, new Vector2(0, 0));
+        }
+
+        private void AddSpacer(float h)
+        {
+            RectTransform r = CreateRect("Spacer", _optionsRoot);
+            r.gameObject.AddComponent<LayoutElement>().preferredHeight = h;
+        }
+
+        private void AddLabel(string text, int size, FontStyle style, Color color)
+        {
+            Text label = CreateText("Label", _optionsRoot, text, size, TextAnchor.MiddleLeft, style);
+            label.color = color;
+            label.gameObject.AddComponent<LayoutElement>().preferredHeight = size + 18;
+        }
+
+        private void AddOptionCard(string label, int slot, int option)
+        {
+            RectTransform rect = CreateRect("Option_" + label, _optionsRoot);
+            rect.gameObject.AddComponent<LayoutElement>().preferredHeight = 62;
+
+            var card = new OptionCard { slot = slot, option = option };
+            card.fill = rect.gameObject.AddComponent<Image>();
+            card.fill.color = Color.white;
+            card.button = rect.gameObject.AddComponent<Button>();
+            card.button.targetGraphic = card.fill;
+            card.border = Frame(rect, Accent, 1f);
+
+            RectTransform bar = CreateRect("Bar", rect);
+            SetRect(bar, new Vector2(0, 0), new Vector2(0, 1), new Vector2(0, 0), new Vector2(5, 0));
+            card.bar = bar.gameObject.AddComponent<Image>();
+            card.bar.raycastTarget = false;
+
+            card.label = CreateText("Text", rect, label, 24, TextAnchor.MiddleLeft, FontStyle.Bold);
+            SetRect(card.label.rectTransform, Vector2.zero, Vector2.one, new Vector2(26, 0), new Vector2(-150, 0));
+
+            card.status = CreateText("Status", rect, "", 15, TextAnchor.MiddleRight, FontStyle.Bold);
+            SetRect(card.status.rectTransform, Vector2.zero, Vector2.one, new Vector2(0, 0), new Vector2(-20, 0));
+
+            card.button.onClick.AddListener(() =>
+            {
+                if (_shownWeapon != null) _shownWeapon.Equip(slot, option);
+            });
+            _cards.Add(card);
+        }
+
+        private void RefreshSelection()
+        {
+            if (_shownWeapon == null) return;
+            foreach (OptionCard card in _cards)
+            {
+                bool selected = _shownWeapon.GetCurrentOption(card.slot) == card.option;
+
+                ColorBlock colors = card.button.colors;
+                colors.colorMultiplier = 1f;
+                colors.fadeDuration = 0.08f;
+                Color baseFill = selected ? AccentA(0.2f) : new Color(1f, 1f, 1f, 0.03f);
+                colors.normalColor = baseFill;
+                colors.selectedColor = baseFill;
+                colors.highlightedColor = selected ? AccentA(0.28f) : AccentA(0.1f);
+                colors.pressedColor = AccentA(0.35f);
+                card.button.colors = colors;
+                card.fill.color = Color.white;
+
+                foreach (Image line in card.border) line.color = selected ? Accent : AccentA(0.22f);
+                card.bar.color = selected ? Accent : new Color(0, 0, 0, 0);
+                card.label.color = selected ? Color.white : new Color(1f, 1f, 1f, 0.75f);
+                card.status.text = selected ? "● УСТАНОВЛЕНО" : "";
+                card.status.color = Accent;
+            }
+        }
+
+        private float NudgeStep()
+        {
+            if (ShiftHeld()) return 0.001f; // 1 мм
+            // Шаг = воксель прицела, чтобы прицел оставался на сетке оружия.
+            float voxel = _shownWeapon != null ? _shownWeapon.SightVoxelSize : 0f;
+            return voxel > 0f ? voxel : 0.005f;
+        }
 
         private void Nudge(int slot, Vector3 dir)
         {
             if (_shownWeapon == null) return;
-            _shownWeapon.Nudge(slot, dir * (ShiftHeld() ? NudgeStepFine : NudgeStep));
+            _shownWeapon.Nudge(slot, dir * NudgeStep());
         }
 
         private void AddNudgeRow(params (string label, UnityEngine.Events.UnityAction action)[] buttons)
         {
             RectTransform row = CreateRect("NudgeRow", _optionsRoot);
-            row.gameObject.AddComponent<LayoutElement>().preferredHeight = 48;
+            row.gameObject.AddComponent<LayoutElement>().preferredHeight = 46;
             var h = row.gameObject.AddComponent<HorizontalLayoutGroup>();
             h.spacing = 8;
             h.childControlWidth = true;
@@ -334,11 +472,21 @@ namespace WeaponCustomization
             {
                 RectTransform rect = CreateRect("Nudge_" + label, row);
                 var image = rect.gameObject.AddComponent<Image>();
-                image.color = ButtonColor;
+                image.color = Color.white;
                 var button = rect.gameObject.AddComponent<Button>();
                 button.targetGraphic = image;
+                ColorBlock colors = button.colors;
+                colors.normalColor = new Color(1f, 1f, 1f, 0.03f);
+                colors.highlightedColor = AccentA(0.14f);
+                colors.selectedColor = new Color(1f, 1f, 1f, 0.03f);
+                colors.pressedColor = AccentA(0.32f);
+                colors.fadeDuration = 0.06f;
+                button.colors = colors;
                 button.onClick.AddListener(action);
-                Text text = CreateText("Text", rect, label, 22, TextAnchor.MiddleCenter, FontStyle.Normal);
+                Frame(rect, AccentA(0.3f), 1f);
+
+                Text text = CreateText("Text", rect, label, 17, TextAnchor.MiddleCenter, FontStyle.Bold);
+                text.color = new Color(1f, 1f, 1f, 0.85f);
                 SetRect(text.rectTransform, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
             }
         }
@@ -392,47 +540,82 @@ namespace WeaponCustomization
 #endif
         }
 
-        private void AddLabel(string text, int size, FontStyle style)
+        // ------------------------------------------------------- HUD-графика
+
+        /// <summary>Тонкая рамка из 4 линий.</summary>
+        private Image[] Frame(RectTransform r, Color c, float t)
         {
-            Text label = CreateText("Label", _optionsRoot, text, size, TextAnchor.MiddleLeft, style);
-            label.gameObject.AddComponent<LayoutElement>().preferredHeight = size + 20;
+            return new[]
+            {
+                EdgeLine(r, new Vector2(0, 1), new Vector2(1, 1), new Vector2(0, -t), Vector2.zero, c),
+                EdgeLine(r, new Vector2(0, 0), new Vector2(1, 0), Vector2.zero, new Vector2(0, t), c),
+                EdgeLine(r, new Vector2(0, 0), new Vector2(0, 1), Vector2.zero, new Vector2(t, 0), c),
+                EdgeLine(r, new Vector2(1, 0), new Vector2(1, 1), new Vector2(-t, 0), Vector2.zero, c),
+            };
         }
 
-        private void AddOptionButton(string label, int slot, int option)
+        /// <summary>Уголки-скобки как у прицельной сетки HUD.</summary>
+        private void Brackets(RectTransform r, Color c, float len, float t)
         {
-            RectTransform rect = CreateRect("Option_" + label, _optionsRoot);
-            rect.gameObject.AddComponent<LayoutElement>().preferredHeight = 64;
-            var image = rect.gameObject.AddComponent<Image>();
-            image.color = Color.white;
-            var button = rect.gameObject.AddComponent<Button>();
-            button.targetGraphic = image;
-
-            Text text = CreateText("Text", rect, label, 26, TextAnchor.MiddleLeft, FontStyle.Normal);
-            SetRect(text.rectTransform, Vector2.zero, Vector2.one, new Vector2(20, 0), new Vector2(-20, 0));
-
-            button.onClick.AddListener(() =>
+            foreach (Vector2 corner in new[] { new Vector2(0, 0), new Vector2(0, 1), new Vector2(1, 0), new Vector2(1, 1) })
             {
-                if (_shownWeapon != null) _shownWeapon.Equip(slot, option);
-            });
-            _optionButtons.Add((button, slot, option));
-        }
-
-        private void RefreshSelection()
-        {
-            if (_shownWeapon == null) return;
-            foreach ((Button button, int slot, int option) in _optionButtons)
-            {
-                bool selected = _shownWeapon.GetCurrentOption(slot) == option;
-                ColorBlock colors = button.colors;
-                Color baseColor = selected ? SelectedColor : ButtonColor;
-                colors.normalColor = baseColor;
-                colors.highlightedColor = baseColor * 1.25f;
-                colors.pressedColor = baseColor * 0.8f;
-                colors.selectedColor = baseColor;
-                colors.colorMultiplier = 1f;
-                button.colors = colors;
-                button.targetGraphic.color = Color.white;
+                float sx = corner.x == 0 ? 1 : -1;
+                float sy = corner.y == 0 ? 1 : -1;
+                Image h = EdgeLine(r, corner, corner, Vector2.zero, Vector2.zero, c);
+                h.rectTransform.pivot = corner;
+                h.rectTransform.sizeDelta = new Vector2(len, t);
+                h.rectTransform.anchoredPosition = new Vector2(-sx * 6, -sy * 6);
+                Image v = EdgeLine(r, corner, corner, Vector2.zero, Vector2.zero, c);
+                v.rectTransform.pivot = corner;
+                v.rectTransform.sizeDelta = new Vector2(t, len);
+                v.rectTransform.anchoredPosition = new Vector2(-sx * 6, -sy * 6);
             }
+        }
+
+        private Image EdgeLine(RectTransform parent, Vector2 aMin, Vector2 aMax, Vector2 oMin, Vector2 oMax, Color c)
+        {
+            RectTransform r = CreateRect("Line", parent);
+            SetRect(r, aMin, aMax, oMin, oMax);
+            var img = r.gameObject.AddComponent<Image>();
+            img.color = c;
+            img.raycastTarget = false;
+            return img;
+        }
+
+        private void Line(Transform parent, Vector2 anchor, Vector2 pos, Vector2 size, Color c,
+                          Vector2? pivot = null, bool stretchX = false)
+        {
+            RectTransform r = CreateRect("Line", parent);
+            if (stretchX)
+            {
+                r.anchorMin = new Vector2(0, anchor.y);
+                r.anchorMax = new Vector2(1, anchor.y);
+            }
+            else
+            {
+                r.anchorMin = r.anchorMax = anchor;
+            }
+            r.pivot = pivot ?? new Vector2(0, 1);
+            r.sizeDelta = size;
+            r.anchoredPosition = pos;
+            var img = r.gameObject.AddComponent<Image>();
+            img.color = c;
+            img.raycastTarget = false;
+        }
+
+        private static Texture2D BuildVignette()
+        {
+            const int size = 64;
+            var tex = new Texture2D(size, size, TextureFormat.RGBA32, false) { wrapMode = TextureWrapMode.Clamp };
+            for (int y = 0; y < size; y++)
+            for (int x = 0; x < size; x++)
+            {
+                float dx = (x + 0.5f) / size * 2f - 1f, dy = (y + 0.5f) / size * 2f - 1f;
+                float a = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01((Mathf.Sqrt(dx * dx + dy * dy) - 0.45f) / 0.9f));
+                tex.SetPixel(x, y, new Color(0, 0, 0, a));
+            }
+            tex.Apply();
+            return tex;
         }
 
         // ---------------------------------------------------------- helpers

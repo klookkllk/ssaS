@@ -17,7 +17,7 @@ namespace WeaponCustomization
                  "прицел будет сгенерирован кодом.")]
         public GameObject prefab;
 
-        [Tooltip("Сгенерировать простой голографический прицел, если префаб не назначен.")]
+        [Tooltip("Сгенерировать воксельный голографический прицел под стиль оружия, если префаб не назначен.")]
         public bool useProceduralHoloSight = true;
 
         [Header("Смещение относительно точки крепления")]
@@ -270,6 +270,46 @@ namespace WeaponCustomization
             Changed?.Invoke();
         }
 
+        [Tooltip("Размер вокселя оружия в метрах. 0 — определить автоматически по мешу.")]
+        public float weaponVoxelSize = 0f;
+
+        /// <summary>Размер вокселя прицела в метрах (после установки) — шаг ручной подгонки.</summary>
+        public float SightVoxelSize { get; private set; }
+
+        private float SightVoxelSizeFor(Transform mount)
+        {
+            float voxel = weaponVoxelSize;
+            if (voxel <= 0f)
+            {
+                Bounds b = new Bounds(transform.position, Vector3.zero);
+                foreach (Renderer r in GetComponentsInChildren<Renderer>())
+                    if (r is MeshRenderer || r is SkinnedMeshRenderer) b.Encapsulate(r.bounds);
+                float length = Mathf.Max(b.size.x, Mathf.Max(b.size.y, b.size.z));
+                voxel = VoxelHoloSight.DetectWeaponVoxelSize(gameObject, length);
+                weaponVoxelSize = voxel;
+                Debug.Log("[WeaponCustomization] Размер вокселя оружия: " + (voxel * 1000f).ToString("F1") + " мм");
+            }
+            SightVoxelSize = VoxelHoloSight.SightVoxelSize(voxel);
+            // Меш строится в локальных координатах точки крепления — учитываем её масштаб.
+            float mountScale = Mathf.Abs(mount.lossyScale.x);
+            return SightVoxelSize / (mountScale > 1e-6f ? mountScale : 1f);
+        }
+
+        /// <summary>Самый "крупный" материал оружия — по нему подбираются шейдер и цвета прицела.</summary>
+        private Material FindWeaponMaterial()
+        {
+            Material best = null;
+            float bestSize = -1f;
+            foreach (Renderer r in GetComponentsInChildren<Renderer>())
+            {
+                if (!(r is MeshRenderer || r is SkinnedMeshRenderer) || r.sharedMaterial == null) continue;
+                if (r.GetComponentInParent<VoxelSightMarker>() != null) continue;
+                float size = r.bounds.size.sqrMagnitude;
+                if (size > bestSize) { bestSize = size; best = r.sharedMaterial; }
+            }
+            return best;
+        }
+
         private GameObject Spawn(AttachmentSlot slot, AttachmentOption option)
         {
             Transform parent = slot.mountPoint != null ? slot.mountPoint : transform;
@@ -281,8 +321,7 @@ namespace WeaponCustomization
             }
             else if (option.useProceduralHoloSight)
             {
-                Renderer weaponRenderer = GetComponentInChildren<Renderer>();
-                instance = ProceduralHoloSight.Build(weaponRenderer != null ? weaponRenderer.sharedMaterial : null);
+                instance = VoxelHoloSight.Build(FindWeaponMaterial(), SightVoxelSizeFor(parent));
                 instance.transform.SetParent(parent, false);
             }
             else
@@ -291,6 +330,7 @@ namespace WeaponCustomization
             }
 
             instance.name = option.displayName;
+            if (instance.GetComponent<VoxelSightMarker>() == null) instance.AddComponent<VoxelSightMarker>();
             instance.transform.localPosition = option.localPosition + GetUserOffset(slots.IndexOf(slot));
             instance.transform.localRotation = Quaternion.Euler(option.localEulerAngles);
             instance.transform.localScale = option.localScale;
