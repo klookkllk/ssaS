@@ -179,17 +179,24 @@ namespace WeaponCustomization
             mount.SetParent(root, false);
             if (any)
             {
-                // Ствол — самая длинная горизонтальная ось (X или Z), верх — локальный Y.
-                bool barrelAlongX = local.size.x > local.size.z;
-                // Ставим чуть впереди центра — над ствольной коробкой.
+                // Оси модели могут быть любыми (FBX часто повёрнут), поэтому определяем их по миру:
+                // "вверх" — локальная ось, ближайшая к мировому верху; "ствол" — ось, ближайшая к взгляду
+                // камеры (оружие в руках смотрит туда же, куда игрок).
+                Vector3 upLocal = SnapToAxis(root.InverseTransformDirection(Vector3.up));
+                Camera cam = Camera.main;
+                Vector3 look = cam != null ? cam.transform.forward : root.forward;
+                look -= Vector3.Project(look, root.TransformDirection(upLocal));
+                Vector3 barrelLocal = SnapToAxis(root.InverseTransformDirection(look), upLocal);
+
+                // Верх модели над центром, чуть ближе к прикладу — над ствольной коробкой.
                 Vector3 pos = local.center;
-                pos.y = local.max.y;
-                if (barrelAlongX) pos.x += local.size.x * 0.05f; else pos.z += local.size.z * 0.05f;
+                pos += upLocal * Vector3.Scale(local.extents, Abs(upLocal)).magnitude;
+                pos -= barrelLocal * Vector3.Scale(local.extents, Abs(barrelLocal)).magnitude * 0.1f;
                 mount.localPosition = pos;
-                mount.localRotation = barrelAlongX ? Quaternion.Euler(0f, 90f, 0f) : Quaternion.identity;
+                mount.localRotation = Quaternion.LookRotation(barrelLocal, upLocal);
                 // Сам прицел в метрах, а модель могла быть отмасштабирована.
                 Vector3 ls = root.lossyScale;
-                mount.localScale = new Vector3(1f / ls.x, 1f / ls.y, 1f / ls.z);
+                mount.localScale = new Vector3(1f / Mathf.Abs(ls.x), 1f / Mathf.Abs(ls.y), 1f / Mathf.Abs(ls.z));
             }
 
             Transform aim = null;
@@ -207,6 +214,62 @@ namespace WeaponCustomization
             return sys;
         }
 
+        private static Vector3 Abs(Vector3 v) => new Vector3(Mathf.Abs(v.x), Mathf.Abs(v.y), Mathf.Abs(v.z));
+
+        /// <summary>Округлить направление до ближайшей локальной оси (±X/±Y/±Z), исключая exclude.</summary>
+        private static Vector3 SnapToAxis(Vector3 dir, Vector3 exclude = default)
+        {
+            Vector3 best = Vector3.forward;
+            float bestDot = float.NegativeInfinity;
+            foreach (Vector3 axis in new[] { Vector3.right, Vector3.left, Vector3.up, Vector3.down, Vector3.forward, Vector3.back })
+            {
+                if (exclude != Vector3.zero && Mathf.Abs(Vector3.Dot(axis, exclude)) > 0.5f) continue;
+                float d = Vector3.Dot(axis, dir);
+                if (d > bestDot) { bestDot = d; best = axis; }
+            }
+            return best;
+        }
+
+        // ------------------------------------------------------------ ручная подгонка
+
+        private string OffsetKey(int slotIndex) => "WeaponCustomization_" + weaponName + "_" + slotIndex;
+
+        public Vector3 GetUserOffset(int slotIndex)
+        {
+            string v = PlayerPrefs.GetString(OffsetKey(slotIndex), "");
+            string[] p = v.Split(';');
+            if (p.Length == 3 &&
+                float.TryParse(p[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float x) &&
+                float.TryParse(p[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float y) &&
+                float.TryParse(p[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float z))
+                return new Vector3(x, y, z);
+            return Vector3.zero;
+        }
+
+        /// <summary>
+        /// Сдвинуть обвес в слоте (в метрах, оси точки крепления: X — вбок, Y — вверх, Z — вперёд).
+        /// Сдвиг сохраняется между запусками. delta = null сбрасывает его.
+        /// </summary>
+        public void Nudge(int slotIndex, Vector3? delta)
+        {
+            if (slotIndex < 0 || slotIndex >= slots.Count) return;
+            Vector3 offset = delta.HasValue ? GetUserOffset(slotIndex) + delta.Value : Vector3.zero;
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            PlayerPrefs.SetString(OffsetKey(slotIndex),
+                offset.x.ToString("F4", ci) + ";" + offset.y.ToString("F4", ci) + ";" + offset.z.ToString("F4", ci));
+            PlayerPrefs.Save();
+
+            AttachmentSlot slot = slots[slotIndex];
+            if (slot.currentInstance != null && slot.currentOption >= 0)
+            {
+                slot.currentInstance.transform.localPosition = slot.options[slot.currentOption].localPosition + offset;
+                if (slot.movesAimPoint) UpdateAimPoint(slot);
+            }
+            Debug.Log("[WeaponCustomization] Сдвиг '" + slot.slotName + "': " + offset.ToString("F4") +
+                      " (можно вписать в Local Position варианта обвеса)");
+            Changed?.Invoke();
+        }
+
         private GameObject Spawn(AttachmentSlot slot, AttachmentOption option)
         {
             Transform parent = slot.mountPoint != null ? slot.mountPoint : transform;
@@ -218,7 +281,8 @@ namespace WeaponCustomization
             }
             else if (option.useProceduralHoloSight)
             {
-                instance = ProceduralHoloSight.Build();
+                Renderer weaponRenderer = GetComponentInChildren<Renderer>();
+                instance = ProceduralHoloSight.Build(weaponRenderer != null ? weaponRenderer.sharedMaterial : null);
                 instance.transform.SetParent(parent, false);
             }
             else
@@ -227,7 +291,7 @@ namespace WeaponCustomization
             }
 
             instance.name = option.displayName;
-            instance.transform.localPosition = option.localPosition;
+            instance.transform.localPosition = option.localPosition + GetUserOffset(slots.IndexOf(slot));
             instance.transform.localRotation = Quaternion.Euler(option.localEulerAngles);
             instance.transform.localScale = option.localScale;
             SetLayerRecursively(instance, parent.gameObject.layer);

@@ -78,6 +78,7 @@ namespace WeaponCustomization
         {
             if (TogglePressed()) SetOpen(!IsOpen);
             else if (IsOpen && EscapePressed()) SetOpen(false);
+            else if (IsOpen) HandleNudgeKeys();
         }
 
         private void LateUpdate()
@@ -294,9 +295,101 @@ namespace WeaponCustomization
                 {
                     AddOptionButton(slot.options[o].displayName, s, o);
                 }
+
+                AddLabel("Положение (стрелки на клавиатуре, Shift — точнее)", 20, FontStyle.Normal);
+                int slotIndex = s;
+                AddNudgeRow(("Выше", () => Nudge(slotIndex, Vector3.up)),
+                            ("Ниже", () => Nudge(slotIndex, Vector3.down)));
+                AddNudgeRow(("Вперёд", () => Nudge(slotIndex, Vector3.forward)),
+                            ("Назад", () => Nudge(slotIndex, Vector3.back)));
+                AddNudgeRow(("Влево", () => Nudge(slotIndex, Vector3.left)),
+                            ("Вправо", () => Nudge(slotIndex, Vector3.right)),
+                            ("Сброс", () => _shownWeapon.Nudge(slotIndex, null)));
             }
 
             RefreshSelection();
+        }
+
+        private const float NudgeStep = 0.005f;     // 5 мм
+        private const float NudgeStepFine = 0.001f; // 1 мм
+
+        private void Nudge(int slot, Vector3 dir)
+        {
+            if (_shownWeapon == null) return;
+            _shownWeapon.Nudge(slot, dir * (ShiftHeld() ? NudgeStepFine : NudgeStep));
+        }
+
+        private void AddNudgeRow(params (string label, UnityEngine.Events.UnityAction action)[] buttons)
+        {
+            RectTransform row = CreateRect("NudgeRow", _optionsRoot);
+            row.gameObject.AddComponent<LayoutElement>().preferredHeight = 48;
+            var h = row.gameObject.AddComponent<HorizontalLayoutGroup>();
+            h.spacing = 8;
+            h.childControlWidth = true;
+            h.childControlHeight = true;
+            h.childForceExpandWidth = true;
+            h.childForceExpandHeight = true;
+
+            foreach ((string label, UnityEngine.Events.UnityAction action) in buttons)
+            {
+                RectTransform rect = CreateRect("Nudge_" + label, row);
+                var image = rect.gameObject.AddComponent<Image>();
+                image.color = ButtonColor;
+                var button = rect.gameObject.AddComponent<Button>();
+                button.targetGraphic = image;
+                button.onClick.AddListener(action);
+                Text text = CreateText("Text", rect, label, 22, TextAnchor.MiddleCenter, FontStyle.Normal);
+                SetRect(text.rectTransform, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
+            }
+        }
+
+        private void HandleNudgeKeys()
+        {
+            if (_shownWeapon == null) return;
+            for (int s = 0; s < _shownWeapon.slots.Count; s++)
+            {
+                if (_shownWeapon.slots[s].currentInstance == null) continue;
+                // Стрелки: вверх/вниз — высота, влево/вправо — назад/вперёд вдоль ствола.
+                if (KeyDown(0)) Nudge(s, Vector3.up);
+                if (KeyDown(1)) Nudge(s, Vector3.down);
+                if (KeyDown(2)) Nudge(s, Vector3.back);
+                if (KeyDown(3)) Nudge(s, Vector3.forward);
+                return; // двигаем первый установленный обвес
+            }
+        }
+
+        // 0 — вверх, 1 — вниз, 2 — влево, 3 — вправо
+        private static bool KeyDown(int arrow)
+        {
+#if ENABLE_INPUT_SYSTEM
+            var kb = UnityEngine.InputSystem.Keyboard.current;
+            if (kb == null) return false;
+            switch (arrow)
+            {
+                case 0: return kb.upArrowKey.wasPressedThisFrame;
+                case 1: return kb.downArrowKey.wasPressedThisFrame;
+                case 2: return kb.leftArrowKey.wasPressedThisFrame;
+                default: return kb.rightArrowKey.wasPressedThisFrame;
+            }
+#else
+            switch (arrow)
+            {
+                case 0: return Input.GetKeyDown(KeyCode.UpArrow);
+                case 1: return Input.GetKeyDown(KeyCode.DownArrow);
+                case 2: return Input.GetKeyDown(KeyCode.LeftArrow);
+                default: return Input.GetKeyDown(KeyCode.RightArrow);
+            }
+#endif
+        }
+
+        private static bool ShiftHeld()
+        {
+#if ENABLE_INPUT_SYSTEM
+            var kb = UnityEngine.InputSystem.Keyboard.current;
+            return kb != null && kb.shiftKey.isPressed;
+#else
+            return Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+#endif
         }
 
         private void AddLabel(string text, int size, FontStyle style)

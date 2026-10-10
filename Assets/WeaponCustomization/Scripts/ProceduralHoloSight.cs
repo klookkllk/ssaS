@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace WeaponCustomization
 {
@@ -18,9 +19,9 @@ namespace WeaponCustomization
         // Высота центра окна над планкой (м).
         public const float WindowHeight = 0.038f;
 
-        public static GameObject Build()
+        public static GameObject Build(Material template = null)
         {
-            EnsureMaterials();
+            EnsureMaterials(template);
 
             var root = new GameObject("HoloSight");
 
@@ -38,9 +39,11 @@ namespace WeaponCustomization
             Box(root.transform, "HoodTop", new Vector3(0f, WindowHeight + 0.021f, hoodZ), new Vector3(0.047f, 0.004f, hoodLen), _bodyMat);
 
             // Стекло (лёгкий голубоватый тон)
-            GameObject glass = Quad(root.transform, "Glass", new Vector3(0f, WindowHeight, hoodZ + hoodLen * 0.5f - 0.002f),
-                new Vector3(0.039f, 0.038f, 1f), _glassMat);
-            glass.transform.localRotation = Quaternion.identity;
+            if (_glassMat != null)
+            {
+                Quad(root.transform, "Glass", new Vector3(0f, WindowHeight, hoodZ + hoodLen * 0.5f - 0.002f),
+                    new Vector3(0.039f, 0.038f, 1f), _glassMat);
+            }
 
             // Сетка: кольцо + точка. Квад смотрит назад (-Z), т.е. на стрелка.
             GameObject reticle = Quad(root.transform, "Reticle", new Vector3(0f, WindowHeight, hoodZ),
@@ -82,23 +85,45 @@ namespace WeaponCustomization
             return go;
         }
 
-        private static void EnsureMaterials()
+        /// <param name="template">Материал самого оружия: если шейдер под текущий рендер-пайплайн
+        /// не найден, берётся его копия — он гарантированно рисуется (а не розовым).</param>
+        private static void EnsureMaterials(Material template)
         {
+            string rp = GraphicsSettings.currentRenderPipeline != null
+                ? GraphicsSettings.currentRenderPipeline.GetType().Name
+                : "";
+            bool urp = rp.Contains("Universal");
+            bool hdrp = rp.Contains("HD");
+
             if (_bodyMat == null)
             {
-                Shader lit = FindShader("Universal Render Pipeline/Lit", "HDRP/Lit", "Standard");
-                _bodyMat = new Material(lit) { name = "HoloSight_Body" };
-                Color body = new Color(0.08f, 0.08f, 0.085f);
-                _bodyMat.color = body;
-                if (_bodyMat.HasProperty("_BaseColor")) _bodyMat.SetColor("_BaseColor", body);
-                if (_bodyMat.HasProperty("_Smoothness")) _bodyMat.SetFloat("_Smoothness", 0.35f);
-                if (_bodyMat.HasProperty("_Glossiness")) _bodyMat.SetFloat("_Glossiness", 0.35f);
+                Shader lit = urp ? Shader.Find("Universal Render Pipeline/Lit")
+                    : hdrp ? Shader.Find("HDRP/Lit")
+                    : Shader.Find("Standard");
+
+                if (lit != null) _bodyMat = new Material(lit);
+                else if (template != null) _bodyMat = new Material(template);
+                else _bodyMat = new Material(Shader.Find("Hidden/InternalErrorShader"));
+
+                _bodyMat.name = "HoloSight_Body";
+                Texture2D bodyTex = BuildBodyTexture(128);
+                Color tint = Color.white;
+                SetColor(_bodyMat, tint);
+                SetTexture(_bodyMat, bodyTex);
+                foreach (string prop in new[] { "_Smoothness", "_Glossiness" })
+                    if (_bodyMat.HasProperty(prop)) _bodyMat.SetFloat(prop, 0.3f);
+                foreach (string prop in new[] { "_Metallic" })
+                    if (_bodyMat.HasProperty(prop)) _bodyMat.SetFloat(prop, 0.2f);
+                // Убираем чужие карты нормалей/металличности, если скопировали материал оружия.
+                foreach (string prop in new[] { "_BumpMap", "_NormalMap", "_MetallicGlossMap", "_MaskMap", "_OcclusionMap", "_EmissionMap" })
+                    if (_bodyMat.HasProperty(prop)) _bodyMat.SetTexture(prop, null);
             }
 
             // Sprites/Default — прозрачный unlit, рисуется и в Built-in, и в URP.
-            Shader sprite = FindShader("Sprites/Default", "Unlit/Transparent");
+            // В HDRP его нет — там стекло пропускаем, а сетку рисуем непрозрачным HDRP/Unlit.
+            Shader sprite = hdrp ? null : Shader.Find("Sprites/Default");
 
-            if (_glassMat == null)
+            if (_glassMat == null && sprite != null)
             {
                 _glassMat = new Material(sprite) { name = "HoloSight_Glass", color = new Color(0.55f, 0.75f, 0.85f, 0.12f) };
                 _glassMat.mainTexture = Texture2D.whiteTexture;
@@ -106,10 +131,65 @@ namespace WeaponCustomization
 
             if (_reticleMat == null)
             {
-                _reticleMat = new Material(sprite) { name = "HoloSight_Reticle", color = new Color(1f, 0.15f, 0.1f, 1f) };
-                _reticleMat.mainTexture = BuildReticleTexture(256);
-                _reticleMat.renderQueue = 3100; // поверх стекла
+                Texture2D reticle = BuildReticleTexture(256);
+                if (sprite != null)
+                {
+                    _reticleMat = new Material(sprite) { color = new Color(1f, 0.15f, 0.1f, 1f) };
+                    _reticleMat.mainTexture = reticle;
+                    _reticleMat.renderQueue = 3100; // поверх стекла
+                }
+                else
+                {
+                    Shader unlit = Shader.Find("HDRP/Unlit");
+                    _reticleMat = unlit != null ? new Material(unlit) : new Material(_bodyMat);
+                    SetColor(_reticleMat, new Color(1f, 0.15f, 0.1f, 1f));
+                    SetTexture(_reticleMat, reticle);
+                    if (_reticleMat.HasProperty("_AlphaCutoffEnable")) _reticleMat.SetFloat("_AlphaCutoffEnable", 1f);
+                    if (_reticleMat.HasProperty("_AlphaCutoff")) _reticleMat.SetFloat("_AlphaCutoff", 0.5f);
+                    _reticleMat.EnableKeyword("_ALPHATEST_ON");
+                }
+                _reticleMat.name = "HoloSight_Reticle";
             }
+        }
+
+        private static void SetColor(Material m, Color c)
+        {
+            foreach (string prop in new[] { "_BaseColor", "_Color", "_UnlitColor" })
+                if (m.HasProperty(prop)) m.SetColor(prop, c);
+        }
+
+        private static void SetTexture(Material m, Texture t)
+        {
+            foreach (string prop in new[] { "_BaseMap", "_MainTex", "_BaseColorMap", "_UnlitColorMap" })
+                if (m.HasProperty(prop)) m.SetTexture(prop, t);
+        }
+
+        /// <summary>Тёмно-серый матовый металл с лёгким шумом и фаской по краям граней.</summary>
+        private static Texture2D BuildBodyTexture(int size)
+        {
+            var tex = new Texture2D(size, size, TextureFormat.RGBA32, true)
+            {
+                name = "HoloSightBody",
+                wrapMode = TextureWrapMode.Clamp,
+                filterMode = FilterMode.Bilinear
+            };
+            var pixels = new Color32[size * size];
+            var rnd = new System.Random(16);
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    float edge = Mathf.Min(Mathf.Min(x, size - 1 - x), Mathf.Min(y, size - 1 - y)) / (size * 0.06f);
+                    float bevel = Mathf.Lerp(0.07f, 0f, Mathf.Clamp01(edge)); // светлая фаска
+                    float noise = (float)rnd.NextDouble() * 0.025f;
+                    float v = 0.11f + noise + bevel;
+                    byte b = (byte)(Mathf.Clamp01(v) * 255);
+                    pixels[y * size + x] = new Color32(b, b, (byte)(b + 2), 255);
+                }
+            }
+            tex.SetPixels32(pixels);
+            tex.Apply(true, true);
+            return tex;
         }
 
         private static Shader FindShader(params string[] names)
