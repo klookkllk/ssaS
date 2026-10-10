@@ -96,13 +96,11 @@ namespace WeaponCustomization
 
         private void Init()
         {
-            if (_initialized) return;
+            // aimPoint может быть назначен позже (автонастройка) — запоминаем исходное положение при первой возможности.
+            if (_initialized || aimPoint == null) return;
             _initialized = true;
-            if (aimPoint != null)
-            {
-                _defaultAimLocalPos = aimPoint.localPosition;
-                _defaultAimLocalRot = aimPoint.localRotation;
-            }
+            _defaultAimLocalPos = aimPoint.localPosition;
+            _defaultAimLocalRot = aimPoint.localRotation;
         }
 
         public int GetCurrentOption(int slotIndex)
@@ -147,6 +145,66 @@ namespace WeaponCustomization
 
             onAttachmentChanged.Invoke(slotIndex, optionIndex);
             Changed?.Invoke();
+        }
+
+        /// <summary>
+        /// Автонастройка оружия без ручной работы: точка крепления ставится на верх модели
+        /// вдоль самой длинной оси (ствол), Aim Point ищется среди детей по имени "aim".
+        /// </summary>
+        public static WeaponAttachmentSystem AutoSetup(GameObject weaponRoot)
+        {
+            var existing = weaponRoot.GetComponent<WeaponAttachmentSystem>();
+            if (existing != null) return existing;
+
+            Transform root = weaponRoot.transform;
+
+            // Габариты модели в локальных координатах оружия.
+            bool any = false;
+            Bounds local = new Bounds();
+            foreach (Renderer r in weaponRoot.GetComponentsInChildren<Renderer>(false))
+            {
+                if (!(r is MeshRenderer || r is SkinnedMeshRenderer)) continue;
+                Bounds wb = r.bounds;
+                for (int i = 0; i < 8; i++)
+                {
+                    Vector3 corner = wb.center + Vector3.Scale(wb.extents,
+                        new Vector3((i & 1) == 0 ? -1 : 1, (i & 2) == 0 ? -1 : 1, (i & 4) == 0 ? -1 : 1));
+                    Vector3 p = root.InverseTransformPoint(corner);
+                    if (!any) { local = new Bounds(p, Vector3.zero); any = true; }
+                    else local.Encapsulate(p);
+                }
+            }
+
+            var mount = new GameObject("SightMount (auto)").transform;
+            mount.SetParent(root, false);
+            if (any)
+            {
+                // Ствол — самая длинная горизонтальная ось (X или Z), верх — локальный Y.
+                bool barrelAlongX = local.size.x > local.size.z;
+                // Ставим чуть впереди центра — над ствольной коробкой.
+                Vector3 pos = local.center;
+                pos.y = local.max.y;
+                if (barrelAlongX) pos.x += local.size.x * 0.05f; else pos.z += local.size.z * 0.05f;
+                mount.localPosition = pos;
+                mount.localRotation = barrelAlongX ? Quaternion.Euler(0f, 90f, 0f) : Quaternion.identity;
+                // Сам прицел в метрах, а модель могла быть отмасштабирована.
+                Vector3 ls = root.lossyScale;
+                mount.localScale = new Vector3(1f / ls.x, 1f / ls.y, 1f / ls.z);
+            }
+
+            Transform aim = null;
+            foreach (Transform t in weaponRoot.GetComponentsInChildren<Transform>(true))
+            {
+                if (t != root && t.name.ToLowerInvariant().Contains("aim")) { aim = t; break; }
+            }
+
+            var sys = weaponRoot.AddComponent<WeaponAttachmentSystem>();
+            sys.weaponName = weaponRoot.name.Replace("(Clone)", "").Trim();
+            sys.aimPoint = aim;
+            sys.slots[0].mountPoint = mount;
+            Debug.Log("[WeaponCustomization] Оружие '" + sys.weaponName + "' настроено автоматически. Aim Point: " +
+                      (aim != null ? aim.name : "не найден"));
+            return sys;
         }
 
         private GameObject Spawn(AttachmentSlot slot, AttachmentOption option)

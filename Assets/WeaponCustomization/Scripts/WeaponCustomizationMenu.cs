@@ -48,8 +48,23 @@ namespace WeaponCustomization
         private float _prevTimeScale = 1f;
         private readonly List<Behaviour> _disabledByMenu = new List<Behaviour>();
 
+        [Tooltip("Часть имени объекта оружия, по которой оно ищется автоматически, " +
+                 "если на нём нет WeaponAttachmentSystem.")]
+        public string autoWeaponNameContains = "MX16";
+
+        // Меню создаётся само при запуске игры — ничего не нужно добавлять в сцену вручную.
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void Bootstrap()
+        {
+            if (FindAll<WeaponCustomizationMenu>().Length > 0) return;
+            var go = new GameObject("WeaponCustomizationMenu (auto)");
+            DontDestroyOnLoad(go);
+            go.AddComponent<WeaponCustomizationMenu>();
+        }
+
         private void Start()
         {
+            Debug.Log("[WeaponCustomization] Меню обвеса готово — нажмите M.");
             _font = LoadFont();
             var previewGo = new GameObject("WeaponPreviewRig");
             _preview = previewGo.AddComponent<WeaponPreviewRenderer>();
@@ -65,6 +80,16 @@ namespace WeaponCustomization
             else if (IsOpen && EscapePressed()) SetOpen(false);
         }
 
+        private void LateUpdate()
+        {
+            // Контроллеры FPS часто блокируют курсор каждый кадр — держим его свободным, пока меню открыто.
+            if (IsOpen && manageCursor)
+            {
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
+            }
+        }
+
         public void SetOpen(bool open)
         {
             if (open == IsOpen) return;
@@ -76,12 +101,12 @@ namespace WeaponCustomization
                 EnsureEventSystem();
 
                 _disabledByMenu.Clear();
-                if (disableWhileOpen != null)
+                IEnumerable<Behaviour> toDisable = disableWhileOpen != null && disableWhileOpen.Length > 0
+                    ? disableWhileOpen
+                    : FindPlayerControllers();
+                foreach (Behaviour b in toDisable)
                 {
-                    foreach (Behaviour b in disableWhileOpen)
-                    {
-                        if (b != null && b.enabled) { b.enabled = false; _disabledByMenu.Add(b); }
-                    }
+                    if (b != null && b.enabled) { b.enabled = false; _disabledByMenu.Add(b); }
                 }
 
                 if (manageCursor)
@@ -101,6 +126,8 @@ namespace WeaponCustomization
                 ShowWeapon(target);
                 _canvasRoot.SetActive(true);
                 _preview.SetVisible(true);
+                Debug.Log("[WeaponCustomization] Меню открыто. Оружие: " +
+                          (target != null ? target.name : "не найдено"));
             }
             else
             {
@@ -125,11 +152,47 @@ namespace WeaponCustomization
         private WeaponAttachmentSystem ResolveWeapon()
         {
             if (weapon != null && weapon.isActiveAndEnabled) return weapon;
-            foreach (WeaponAttachmentSystem w in FindObjectsOfType<WeaponAttachmentSystem>())
+            foreach (WeaponAttachmentSystem w in FindAll<WeaponAttachmentSystem>())
             {
                 if (w.isActiveAndEnabled) return w;
             }
+
+            // Ничего не настроено вручную — ищем оружие в руках по имени и настраиваем автоматически.
+            if (!string.IsNullOrEmpty(autoWeaponNameContains))
+            {
+                string key = autoWeaponNameContains.ToLowerInvariant();
+                foreach (Transform t in FindAll<Transform>())
+                {
+                    if (!t.gameObject.activeInHierarchy || !t.name.ToLowerInvariant().Contains(key)) continue;
+                    // Берём самый верхний объект с таким именем.
+                    if (t.parent != null && t.parent.name.ToLowerInvariant().Contains(key)) continue;
+                    if (t.GetComponentInChildren<Renderer>() == null) continue;
+                    return WeaponAttachmentSystem.AutoSetup(t.gameObject);
+                }
+                Debug.LogWarning("[WeaponCustomization] Не найдено активное оружие с именем, содержащим '" +
+                                 autoWeaponNameContains + "'. Возьмите MX16A4 в руки или назначьте поле Weapon.");
+            }
             return weapon;
+        }
+
+        // Контроллер игрока KINEMATION и PlayerInput — чтобы при открытом меню не стрелять и не крутить камеру.
+        private static IEnumerable<Behaviour> FindPlayerControllers()
+        {
+            foreach (Behaviour b in FindAll<Behaviour>())
+            {
+                string n = b.GetType().Name;
+                if (n == "PlayerInput" || n.Contains("FPSController") || n.Contains("FPSPlayer"))
+                    yield return b;
+            }
+        }
+
+        private static T[] FindAll<T>() where T : Object
+        {
+#if UNITY_2023_1_OR_NEWER
+            return FindObjectsByType<T>(FindObjectsSortMode.None);
+#else
+            return FindObjectsOfType<T>();
+#endif
         }
 
         private void ShowWeapon(WeaponAttachmentSystem target)
@@ -329,7 +392,7 @@ namespace WeaponCustomization
 
         private static void EnsureEventSystem()
         {
-            if (EventSystem.current != null || FindObjectOfType<EventSystem>() != null) return;
+            if (EventSystem.current != null || FindAll<EventSystem>().Length > 0) return;
             var go = new GameObject("EventSystem", typeof(EventSystem));
 #if ENABLE_INPUT_SYSTEM
             go.AddComponent<UnityEngine.InputSystem.UI.InputSystemUIInputModule>();
