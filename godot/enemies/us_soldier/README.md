@@ -35,7 +35,8 @@ Hips ─ Torso ─ Head
 Анимации в `AnimationPlayer`: `idle` и `walk` (зациклены), `shoot` (отдача + дульная вспышка), `death`.
 
 ```gdscript
-@onready var anim: AnimationPlayer = $soldier_gasmask/AnimationPlayer
+# скрипт на родителе экземпляра модели
+@onready var anim: AnimationPlayer = find_child("AnimationPlayer", true, false)
 
 func _ready() -> void:
 	anim.play("walk")
